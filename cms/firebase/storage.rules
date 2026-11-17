@@ -1,0 +1,59 @@
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+    // Deny everything by default
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null && request.auth.uid != null;
+    }
+
+    function isValidAttachment() {
+      return request.resource != null &&
+        request.resource.size <= 15 * 1024 * 1024 && // Max 15MB
+        (
+          request.resource.contentType.matches('application/pdf') ||
+          request.resource.contentType.matches('image/jpeg') ||
+          request.resource.contentType.matches('image/png') ||
+          request.resource.contentType.matches('image/webp')
+        );
+    }
+
+    function isTenantMemberClaim(tenantId) {
+      return isSignedIn() &&
+        request.auth.token.tenantId == tenantId &&
+        request.auth.token.active == true;
+    }
+
+    // Structured private path: /tenants/{tenantId}/patients/{patientId}/visits/{visitId}/{fileName}
+    match /tenants/{tenantId}/patients/{patientId}/visits/{visitId}/{fileName} {
+      allow read: if isTenantMemberClaim(tenantId);
+      allow write: if isTenantMemberClaim(tenantId) &&
+        (request.auth.token.role in ['clinic_owner', 'clinic_manager', 'doctor', 'nurse', 'receptionist', 'lab_coordinator']) &&
+        isValidAttachment();
+      allow delete: if false; // Medical originals are archived, never deleted via client
+    }
+
+    // Lab Result attachments: /tenants/{tenantId}/lab_results/{orderId}/{fileName}
+    match /tenants/{tenantId}/lab_results/{orderId}/{fileName} {
+      allow read: if isTenantMemberClaim(tenantId);
+      allow write: if isTenantMemberClaim(tenantId) &&
+        (request.auth.token.role in ['clinic_owner', 'clinic_manager', 'doctor', 'receptionist', 'lab_coordinator']) &&
+        isValidAttachment();
+      allow delete: if false;
+    }
+
+    // Administrative / Expense receipts: /tenants/{tenantId}/expenses/{expenseId}/{fileName}
+    match /tenants/{tenantId}/expenses/{expenseId}/{fileName} {
+      allow read: if isTenantMemberClaim(tenantId) &&
+        (request.auth.token.role in ['clinic_owner', 'clinic_manager', 'accountant']);
+      allow write: if isTenantMemberClaim(tenantId) &&
+        (request.auth.token.role in ['clinic_owner', 'clinic_manager', 'accountant']) &&
+        isValidAttachment();
+      allow delete: if false;
+    }
+  }
+}

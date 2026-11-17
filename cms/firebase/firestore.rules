@@ -1,0 +1,326 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global default deny catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // ---------------------------------------------------------
+    // Hardened Primitive Helpers
+    // ---------------------------------------------------------
+    function isSignedIn() {
+      return request.auth != null && request.auth.uid != null;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSuperAdmin() {
+      return isSignedIn() &&
+        exists(/databases/$(database)/documents/platform/administrators/users/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/platform/administrators/users/$(request.auth.uid)).data.active == true;
+    }
+
+    function membershipPath(tenantId) {
+      return /databases/$(database)/documents/tenants/$(tenantId)/memberships/$(request.auth.uid);
+    }
+
+    function isTenantMember(tenantId) {
+      return isSignedIn() &&
+        isValidId(tenantId) &&
+        exists(membershipPath(tenantId)) &&
+        get(membershipPath(tenantId)).data.active == true;
+    }
+
+    function memberRole(tenantId) {
+      return get(membershipPath(tenantId)).data.role;
+    }
+
+    function hasRole(tenantId, allowedRoles) {
+      return isTenantMember(tenantId) && (memberRole(tenantId) in allowedRoles);
+    }
+
+    function hasCommonEnvelope(data, tenantId) {
+      return data.id is string && data.id.size() <= 128 &&
+        data.tenantId == tenantId &&
+        data.schemaVersion is int && data.schemaVersion >= 1 &&
+        data.recordVersion is int && data.recordVersion >= 1 &&
+        data.createdBy is string && data.createdBy.size() <= 128 &&
+        data.updatedBy is string && data.updatedBy.size() <= 128;
+    }
+
+    function isMonotonicVersionUpdate() {
+      return incoming().tenantId == existing().tenantId &&
+        incoming().id == existing().id &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().createdBy == existing().createdBy &&
+        incoming().updatedBy == request.auth.uid &&
+        incoming().recordVersion == existing().recordVersion + 1;
+    }
+
+    // ---------------------------------------------------------
+    // Platform Level
+    // ---------------------------------------------------------
+    match /platform/administrators/users/{adminUid} {
+      allow get: if isSignedIn() && request.auth.uid == adminUid;
+      allow list, write: if false; // Managed via Cloud Functions / Admin SDK only
+    }
+
+    match /platform/configuration/{configId} {
+      allow get: if isSuperAdmin();
+      allow write: if false;
+    }
+
+    // ---------------------------------------------------------
+    // Multi-Tenant Root
+    // ---------------------------------------------------------
+    match /tenants/{tenantId} {
+      allow get: if isValidId(tenantId) && (isSuperAdmin() || isTenantMember(tenantId));
+      allow list: if isSuperAdmin();
+      allow create: if isSuperAdmin();
+      allow update: if isValidId(tenantId) && (isSuperAdmin() || hasRole(tenantId, ['clinic_owner']));
+      allow delete: if false;
+
+      // Settings & Branches
+      match /settings/{settingId} {
+        allow get, list: if isTenantMember(tenantId);
+        allow create, update: if isValidId(settingId) && hasRole(tenantId, ['clinic_owner', 'clinic_manager']);
+        allow delete: if false;
+      }
+
+      match /branches/{branchId} {
+        allow get, list: if isTenantMember(tenantId);
+        allow create, update: if isValidId(branchId) && hasRole(tenantId, ['clinic_owner', 'clinic_manager']);
+        allow delete: if false;
+      }
+
+      // Memberships (RBAC source of truth)
+      match /memberships/{userId} {
+        allow get: if isValidId(userId) && (isSuperAdmin() || (isSignedIn() && request.auth.uid == userId) || hasRole(tenantId, ['clinic_owner', 'clinic_manager']));
+        allow list: if isTenantMember(tenantId) && resource.data.tenantId == tenantId && hasRole(tenantId, ['clinic_owner', 'clinic_manager']);
+        // Role elevation prevented on client; managed via Cloud Functions
+        allow create, update, delete: if false;
+      }
+
+      // Patients
+      match /patients/{patientId} {
+        allow get: if isValidId(patientId) && isTenantMember(tenantId);
+        allow list: if isTenantMember(tenantId) && resource.data.tenantId == tenantId;
+        allow create: if isValidId(patientId) &&
+          hasRole(tenantId, ['clinic_owner', 'clinic_manager', 'receptionist', 'doctor', 'nurse']) &&
+          hasCommonEnvelope(incoming(), tenantId) &&
+          incoming().createdBy == request.auth.uid &&
+          incoming().fullName is string && incoming().fullName.size() >= 2 && incoming().fullName.size() <= 160 &&
+          incoming().medicalNumber is string && incoming().medicalNumber.size() <= 32;
+        allow update: if isValidId(patientId) &&
+          hasRole(tenantId, ['clinic_owner', 'clinic_manager', 'receptionist', 'doctor', 'nurse']) &&
+          hasCommonEnvelope(incoming(), tenantId) &&
+          isMonotonicVersionUpdate();
+        allow delete: if false; // Never physically delete patient history; archive instead
+      }
+
+      // Appointments
+      match /appointments/{appointmentId} {
+        allow get: if isValidId(appointmentId) && isTenantMember(tenantId);
+        allow list: if isTenantMember(tenantId) && resource.data.tenantId == tenantId;
+        allow create: if isValidId(appointmentId) &&
+          hasRole(tenantId, ['clinic_owner', 'clinic_manager', 'receptionist', 'doctor', 'nurse']) &&
+          hasCommonEnvelope(incoming(), tenantId) &&
+          incoming().createdBy == request.auth.uid;
+        allow update: if isValidId(appointmentId) &&
+          hasRole(tenantId, ['clinic_owner', 'clinic_manager', 'receptionist', 'doctor', 'nurse']) &&
+          hasCommonEnvelope(incoming(), tenantId) &&
+          isMonotonicVersionUpdate();
+        allow delete: if false;
+      }
+
+      // Queue Tickets
+      match /queue_tickets/{ticketId} {
+        allow get: if isValidId(ticketId) && isTenantMember(tenantId);
+        allow list: if isTenantMember(tenantId) && resource.data.tenantId == tenantId;
+        allow create: if isValidId(ticketId) &&
+          hasRole(tenantId, ['clinic_owner', 'clinic_manager', 'receptionist', 'nurse', 'doctor']) &&
+          hasCommonEnvelope(incoming(), tenantId) &&
+          incoming().createdBy == request.auth.uid;
+        allow update: if isValidId(ticketId) &&
+          hasRole(tenantId, ['clinic_owner', 'clinic_manager', 'receptionist', 'nurse', 'doctor']) &&
+          hasCommonEnvelope(incoming(), tenantId) &&
+          isMonotonicVersionUpdate();
+        allow delete: if false;
+      }
+
+      // Visits & Consultations (Clinical Protection)
+      match /visits/{visitId} {
+        allow get: if isValidId(visitId) && hasRole(tenantId, ['clinic_owner', 'clinic_manager', 'doctor', 'nurse', 'receptionist', 'accountant']);
+        allow list: if isTenantMember(tenantId) && resource.data.tenantId == tenantId && hasRole(tenantId, ['clinic_owner', 'clinic_manager', 'doctor', 'nurse', 'receptionist', 'accountant']);
+        allow create: if isValidId(visitId) &&
+          hasRole(tenantId, ['clinic_owner', 'clinic_manager', 'receptionist', 'doctor', 'nurse']) &&
+          hasCommonEnvelope(incoming(), tenantId) &&
+          incoming().createdBy == request.auth.uid;
+        allow update: if isValidId(visitId) &&
+          hasRole(tenantId, ['doctor', 'nurse', 'clinic_owner', 'clinic_manager']) &&
+          existing().status != 'finalized' && // Terminal lock once finalized by doctor
+          hasCommonEnvelope(incoming(), tenantId) &&
+          isMonotonicVersionUpdate();
+        allow delete: if false;
+      }
+
+      match /consultations/{consultationId} {
+        allow get: if isValidId(consultationId) && hasRole(tenantId, ['clinic_owner', 'clinic_manager', 'doctor', 'nurse']);
+        allow list: if isTenantMember(tenantId) && resource.data.tenantId == tenantId && hasRole(tenantId, ['clinic_owner', 'clinic_manager', 'doctor', 'nurse']);
+        allow create: if isValidId(consultationId) &&
+          hasRole(tenantId, ['doctor', 'nurse']) &&
+          hasCommonEnvelope(incoming(), tenantId) &&
+          incoming().createdBy == request.auth.uid;
+        allow update: if isValidId(consultationId) &&
+          hasRole(tenantId, ['doctor', 'nurse']) &&
+          existing().isDraft == true && // Approved consultation cannot be silently rewritten
+          hasCommonEnvelope(incoming(), tenantId) &&
+          isMonotonicVersionUpdate();
+        allow delete: if false;
+      }
+
+      // Laboratories & Medical Tests Catalog
+      match /laboratories/{labId} {
+        allow get: if isValidId(labId) && isTenantMember(tenantId);
+        allow list: if isTenantMember(tenantId) && resource.data.tenantId == tenantId;
+        allow create, update: if isValidId(labId) && hasRole(tenantId, ['clinic_owner', 'clinic_manager', 'lab_coordinator']);
+        allow delete: if false;
+      }
+
+      match /medical_tests/{testId} {
+        allow get: if isValidId(testId) && isTenantMember(tenantId);
+        allow list: if isTenantMember(tenantId) && resource.data.tenantId == tenantId;
+        allow create, update: if isValidId(testId) && hasRole(tenantId, ['clinic_owner', 'clinic_manager', 'doctor', 'lab_coordinator']);
+        allow delete: if false;
+      }
+
+      // Lab Orders & Results
+      match /lab_orders/{orderId} {
+        allow get: if isValidId(orderId) && hasRole(tenantId, ['clinic_owner', 'clinic_manager', 'doctor', 'nurse', 'receptionist', 'lab_coordinator', 'accountant']);
+        allow list: if isTenantMember(tenantId) && resource.data.tenantId == tenantId && hasRole(tenantId, ['clinic_owner', 'clinic_manager', 'doctor', 'nurse', 'receptionist', 'lab_coordinator', 'accountant']);
+        allow create: if isValidId(orderId) && hasRole(tenantId, ['doctor']) && hasCommonEnvelope(incoming(), tenantId) && incoming().createdBy == request.auth.uid;
+        allow update: if isValidId(orderId) && hasRole(tenantId, ['doctor', 'lab_coordinator', 'clinic_manager']) && hasCommonEnvelope(incoming(), tenantId) && isMonotonicVersionUpdate();
+        allow delete: if false;
+
+        match /items/{itemId} {
+          allow get, list: if isTenantMember(tenantId);
+          allow create, update: if hasRole(tenantId, ['doctor', 'lab_coordinator']);
+          allow delete: if false;
+        }
+      }
+
+      match /lab_results/{resultId} {
+        allow get: if isValidId(resultId) && hasRole(tenantId, ['clinic_owner', 'clinic_manager', 'doctor', 'nurse', 'lab_coordinator', 'receptionist']);
+        allow list: if isTenantMember(tenantId) && resource.data.tenantId == tenantId && hasRole(tenantId, ['clinic_owner', 'clinic_manager', 'doctor', 'nurse', 'lab_coordinator', 'receptionist']);
+        allow create: if isValidId(resultId) &&
+          hasRole(tenantId, ['doctor', 'lab_coordinator', 'receptionist']) &&
+          hasCommonEnvelope(incoming(), tenantId) &&
+          incoming().reviewStatus == 'pending_review' && // Cannot bypass human doctor review on creation
+          incoming().createdBy == request.auth.uid;
+        allow update: if isValidId(resultId) &&
+          hasRole(tenantId, ['doctor']) && // Only Doctor can approve/reject lab results
+          hasCommonEnvelope(incoming(), tenantId) &&
+          isMonotonicVersionUpdate();
+        allow delete: if false;
+      }
+
+      // Medications & Prescriptions
+      match /medications/{medId} {
+        allow get: if isValidId(medId) && isTenantMember(tenantId);
+        allow list: if isTenantMember(tenantId) && resource.data.tenantId == tenantId;
+        allow create, update: if isValidId(medId) && hasRole(tenantId, ['clinic_owner', 'clinic_manager', 'doctor']);
+        allow delete: if false;
+      }
+
+      match /prescriptions/{prescriptionId} {
+        allow get: if isValidId(prescriptionId) && hasRole(tenantId, ['clinic_owner', 'clinic_manager', 'doctor', 'nurse', 'receptionist']);
+        allow list: if isTenantMember(tenantId) && resource.data.tenantId == tenantId && hasRole(tenantId, ['clinic_owner', 'clinic_manager', 'doctor', 'nurse', 'receptionist']);
+        allow create: if isValidId(prescriptionId) && hasRole(tenantId, ['doctor']) && hasCommonEnvelope(incoming(), tenantId) && incoming().createdBy == request.auth.uid;
+        allow update: if isValidId(prescriptionId) && hasRole(tenantId, ['doctor']) && hasCommonEnvelope(incoming(), tenantId) && isMonotonicVersionUpdate();
+        allow delete: if false;
+
+        match /items/{itemId} {
+          allow get, list: if isTenantMember(tenantId);
+          allow create, update: if hasRole(tenantId, ['doctor']);
+          allow delete: if false;
+        }
+      }
+
+      // Medical Archive Documents
+      match /documents/{documentId} {
+        allow get: if isValidId(documentId) && hasRole(tenantId, ['clinic_owner', 'clinic_manager', 'doctor', 'nurse', 'receptionist', 'lab_coordinator', 'accountant']);
+        allow list: if isTenantMember(tenantId) && resource.data.tenantId == tenantId && hasRole(tenantId, ['clinic_owner', 'clinic_manager', 'doctor', 'nurse', 'receptionist', 'lab_coordinator', 'accountant']);
+        allow create: if isValidId(documentId) && hasRole(tenantId, ['clinic_owner', 'clinic_manager', 'doctor', 'nurse', 'receptionist', 'lab_coordinator']) && hasCommonEnvelope(incoming(), tenantId) && incoming().createdBy == request.auth.uid;
+        allow update: if isValidId(documentId) && hasRole(tenantId, ['clinic_owner', 'clinic_manager', 'doctor', 'receptionist']) && hasCommonEnvelope(incoming(), tenantId) && isMonotonicVersionUpdate();
+        allow delete: if false;
+      }
+
+      // Financial System (No silent edits; payments & shifts enforced strictly)
+      match /invoices/{invoiceId} {
+        allow get: if isValidId(invoiceId) && hasRole(tenantId, ['clinic_owner', 'clinic_manager', 'accountant', 'receptionist', 'doctor']);
+        allow list: if isTenantMember(tenantId) && resource.data.tenantId == tenantId && hasRole(tenantId, ['clinic_owner', 'clinic_manager', 'accountant', 'receptionist']);
+        allow create: if isValidId(invoiceId) && hasRole(tenantId, ['clinic_owner', 'clinic_manager', 'accountant', 'receptionist']) && hasCommonEnvelope(incoming(), tenantId) && incoming().createdBy == request.auth.uid;
+        allow update: if isValidId(invoiceId) &&
+          hasRole(tenantId, ['clinic_owner', 'clinic_manager', 'accountant']) &&
+          existing().status != 'void' &&
+          hasCommonEnvelope(incoming(), tenantId) &&
+          isMonotonicVersionUpdate();
+        allow delete: if false;
+      }
+
+      match /payments/{paymentId} {
+        allow get: if isValidId(paymentId) && hasRole(tenantId, ['clinic_owner', 'clinic_manager', 'accountant', 'receptionist']);
+        allow list: if isTenantMember(tenantId) && resource.data.tenantId == tenantId && hasRole(tenantId, ['clinic_owner', 'clinic_manager', 'accountant', 'receptionist']);
+        // Sensitive financial payments must be committed via Cloud Functions or local server syncIngest
+        allow create, update, delete: if false;
+      }
+
+      match /expenses/{expenseId} {
+        allow get: if isValidId(expenseId) && hasRole(tenantId, ['clinic_owner', 'clinic_manager', 'accountant']);
+        allow list: if isTenantMember(tenantId) && resource.data.tenantId == tenantId && hasRole(tenantId, ['clinic_owner', 'clinic_manager', 'accountant']);
+        allow create: if isValidId(expenseId) && hasRole(tenantId, ['clinic_owner', 'clinic_manager', 'accountant']) && hasCommonEnvelope(incoming(), tenantId) && incoming().createdBy == request.auth.uid;
+        allow update, delete: if false;
+      }
+
+      match /cashbox_shifts/{shiftId} {
+        allow get: if isValidId(shiftId) && hasRole(tenantId, ['clinic_owner', 'clinic_manager', 'accountant', 'receptionist']);
+        allow list: if isTenantMember(tenantId) && resource.data.tenantId == tenantId && hasRole(tenantId, ['clinic_owner', 'clinic_manager', 'accountant']);
+        allow create, update, delete: if false; // Managed via server transactions
+      }
+
+      // Notifications
+      match /notifications/{notificationId} {
+        allow get, list: if isTenantMember(tenantId) && resource.data.tenantId == tenantId && resource.data.targetUserId == request.auth.uid;
+        allow update: if isValidId(notificationId) && isTenantMember(tenantId) && existing().targetUserId == request.auth.uid && incoming().diff(existing()).affectedKeys().hasOnly(['isRead', 'updatedAt']);
+        allow create, delete: if false;
+      }
+
+      // Sync Conflicts (Reviewable by authorized clinicians/managers)
+      match /sync_conflicts/{conflictId} {
+        allow get: if isValidId(conflictId) && hasRole(tenantId, ['clinic_owner', 'clinic_manager', 'doctor', 'accountant']);
+        allow list: if isTenantMember(tenantId) && resource.data.tenantId == tenantId && hasRole(tenantId, ['clinic_owner', 'clinic_manager', 'doctor', 'accountant']);
+        allow create, update, delete: if false; // Resolved via Cloud Function audit-wrapped transaction
+      }
+
+      // Audit Logs (Strictly Append-Only via Server / Cloud Functions)
+      match /audit_logs/{logId} {
+        allow get: if isValidId(logId) && hasRole(tenantId, ['clinic_owner', 'clinic_manager', 'accountant']);
+        allow list: if isTenantMember(tenantId) && resource.data.tenantId == tenantId && hasRole(tenantId, ['clinic_owner', 'clinic_manager', 'accountant']);
+        allow create, update, delete: if false;
+      }
+    }
+  }
+}

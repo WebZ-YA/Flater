@@ -1,0 +1,12 @@
+name: cms_core
+description: Core utilities, RBAC engine, PHI-safe logging, and errors for Clinic Management System.
+version: 1.1.0
+publish_to: none
+
+environment:
+  sdk: ">=3.5.0 <4.0.0"
+
+dependencies:
+  uuid: 4.5.1
+  crypto: 3.0.6
+  intl: 0.19.0

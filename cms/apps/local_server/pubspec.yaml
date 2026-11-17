@@ -1,0 +1,27 @@
+name: cms_local_server
+description: Local Clinic Server in Dart providing LAN REST/WebSocket API, SQLite/Drift persistence, and Hybrid Sync Engine.
+version: 1.1.0
+publish_to: none
+
+environment:
+  sdk: ">=3.5.0 <4.0.0"
+
+dependencies:
+  cms_core:
+    path: ../../packages/core
+  cms_shared:
+    path: ../../packages/shared
+  drift: 2.22.1
+  sqlite3: 2.4.7
+  shelf: 1.4.2
+  shelf_router: 1.1.4
+  shelf_web_socket: 2.0.1
+  web_socket_channel: 3.0.1
+  http: 1.2.2
+  crypto: 3.0.6
+  uuid: 4.5.1
+
+dev_dependencies:
+  build_runner: 2.4.13
+  drift_dev: 2.22.1
+  test: 1.25.8

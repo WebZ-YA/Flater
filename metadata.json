@@ -1,0 +1,6 @@
+{
+  "name": "Clinic Management System (CMS)",
+  "description": "نظام إدارة العيادات الطبية المتكامل بمعمارية هجينة Local + Cloud وفق وثيقة SRS v1.1",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

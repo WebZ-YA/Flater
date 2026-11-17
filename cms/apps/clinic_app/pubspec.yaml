@@ -1,0 +1,40 @@
+name: cms_clinic_app
+description: Multi-platform Flutter Clinic Management System (Windows, Android, Web, iOS/macOS ready).
+version: 1.1.0+1
+publish_to: none
+
+environment:
+  sdk: ">=3.5.0 <4.0.0"
+  flutter: ">=3.24.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_localizations:
+    sdk: flutter
+  cms_core:
+    path: ../../packages/core
+  cms_shared:
+    path: ../../packages/shared
+  cms_design_system:
+    path: ../../packages/design_system
+  flutter_riverpod: 2.6.1
+  go_router: 14.6.2
+  http: 1.2.2
+  web_socket_channel: 3.0.1
+  intl: 0.19.0
+  qr_flutter: 4.1.0
+  pdf: 3.11.1
+  printing: 5.13.4
+  file_picker: 8.1.4
+  # Note: firebase_core / firebase_auth / cloud_firestore / firebase_storage
+  # are abstracted behind CloudGateway for Android/Web so Windows Desktop LAN mode
+  # compiles and runs cleanly without unsupported native FlutterFire Desktop plugins.
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: 5.0.0
+
+flutter:
+  uses-material-design: true

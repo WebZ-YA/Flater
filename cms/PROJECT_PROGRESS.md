@@ -1,0 +1,26 @@
+# Clinic Management System (CMS) — Progress Tracker
+
+- [x] **المرحلة 1: التحليل والتصميم**
+  - قراءة وتحليل وثيقة SRS v1.1 بالكامل (21 صفحة)
+  - توثيق المعمارية الشاملة (`docs/architecture.md`)
+  - توثيق تصميم Firestore وDrift SQLite (`docs/database_design.md`)
+  - توثيق محرك المزامنة وحل التعارضات (`docs/sync_design.md`)
+  - توثيق الأمان ومصفوفة RBAC الـ 9 (`docs/security.md`)
+- [x] **المرحلة 2: تأسيس المشروع والمستودع المعياري**
+  - إنشاء حزم `cms_core`, `cms_shared`, `cms_design_system`
+  - إنشاء تطبيق Flutter `apps/clinic_app` بإعدادات RTL العربية وMaterial 3 وRiverpod وGoRouter
+  - إنشاء مشروع Firebase (`firestore.rules`, `storage.rules`, `firestore.indexes.json`, `functions/`)
+- [x] **المرحلة 3: الهوية والصلاحيات (RBAC)**
+  - محرك الصلاحيات لـ 9 أدوار في `cms_core` و`firestore.rules` و`functions/src/index.ts`
+  - شاشة تسجيل الدخول وحراس التوجيه في `GoRouter`
+- [x] **المرحلة 4–8 (الأساس البرمجي والشاشات والهجين)**
+  - خادم Dart المحلي (`apps/local_server`) مع جداول Drift الـ 15+ والمعاملات الذرية
+  - محرك المزامنة الثنائي `BackgroundSyncWorker` + دالة `syncIngest` السحابية
+  - واجهات Flutter للوحة التحكم، المرضى (مع منع التكرار وQR)، الطوابير وشاشة الانتظار، المعاينة، المختبرات، الفواتير (مع فصل رسوم المختبر)، مركز المزامنة، سجل التدقيق
+- [x] **المرحلة 9 (جزئي حسب بيئة التشغيل)**
+  - اختبارات TypeScript الفعلية للمزامنة ومنع التعارض والفصل المالي (`test/sync_and_billing_test.ts`)
+  - واجهة ويب تفاعلية عربية RTL في المعاينة الحية لاختبار مسارات النظام والربط مع API المحلي
+- [ ] **معلق على بيئة تحتوي Flutter/Dart SDK وFirebase Emulator**
+  - تشغيل `dart run build_runner build` لتوليد `cms_database.g.dart`
+  - تشغيل `flutter test` و`flutter build windows/apk/web`
+  - تشغيل اختبارات Firebase Emulator Suite الفعلية على `firestore.rules`
